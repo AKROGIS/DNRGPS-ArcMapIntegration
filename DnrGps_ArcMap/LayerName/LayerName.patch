@@ -1,0 +1,222 @@
+--- C:/Users/resarwas/Documents/Visual Studio 2010/Projects/DnrGps/ArcMapIntegration/DnrGps_ArcMap/DnrGpsController.cs	Tue Jan 03 10:31:23 2012
++++ T:/USER/Regan/Xfer/dnrgps/DnrGps_ArcMap/DnrGpsController.cs	Thu Dec 22 23:37:47 2011
+@@ -29,7 +29,7 @@
+             return MakeTableFromFeatureLayer(layer as IGeoFeatureLayer);
+         }
+ 
+-        public DataTable GetFeatureLayerData(string layerName)
++        public DataTable GetFeatureLayerData(ILayerName layerName)
+         {
+             if (MxDocument == null)
+                 return null;
+@@ -37,7 +37,7 @@
+             return MakeTableFromFeatureLayer(layer as IGeoFeatureLayer);
+         }
+ 
+-        public DataTable GetFeatureLayerData(string layerName, string[] fieldNames)
++        public DataTable GetFeatureLayerData(ILayerName layerName, string[] fieldNames)
+         {
+             if (MxDocument == null)
+                 return null;
+@@ -46,7 +46,7 @@
+         }
+ 
+ 
+-        public void WriteFeatureLayerToFile(string layerName, string file)
++        public void WriteFeatureLayerToFile(ILayerName layerName, string file)
+         {
+             if (MxDocument == null)
+                 return;
+@@ -61,7 +61,7 @@
+             start = DateTime.Now;
+ 
+             DataTable table = MakeTableFromFeatureLayer(layer as IGeoFeatureLayer);
+-            table.TableName = layerName;  //table name must be set in order to serialize the table
++            table.TableName = layerName.Name;  //table name must be set in order to serialize the table
+             
+             System.Windows.Forms.MessageBox.Show(string.Format("Building DataTable took {0}", DateTime.Now - start));
+             start = DateTime.Now;
+@@ -71,10 +71,10 @@
+             System.Windows.Forms.MessageBox.Show(string.Format("Writing DataTable took {0}", DateTime.Now - start));
+         }
+ 
+-        public string[] GetFeatureLayerNames()
++        public ILayerName[] GetFeatureLayerNames()
+         {
+             if (MxDocument == null)
+-                return new string[0];
++                return new ILayerName[0];
+             return GetFeatureLayers().Select(x => x.Name).ToArray();
+         }
+ 
+@@ -428,11 +428,11 @@
+                    };
+         }
+ 
+-        private ILayer GetLayerFromName(string name)
++        private ILayer GetLayerFromName(ILayerName layerName)
+         {
+             try
+             {
+-                return GetFeatureLayers().Where(x => x.Name == name).First().Layer;
++                return GetFeatureLayers().Where(x => x.Name.Equals(layerName)).First().Layer;
+             }
+             catch (InvalidOperationException)
+             {
+@@ -517,6 +517,8 @@
+             if (geometry.IsEmpty)
+                 return string.Empty;
+             geometry.Project(Wgs84);
++            //FIXME - finish implementing the geometry converter.
++            //if (geometry.GeometryType == esriGeometryType.esriGeometryAny)
+             if (geometry is IPoint)
+                 return BuildWellKnownText(geometry as IPoint);
+             if (geometry is IMultipoint)
+--- C:/Users/resarwas/Documents/Visual Studio 2010/Projects/DnrGps/ArcMapIntegration/DnrGps_ArcMap/IDnrGpsController.cs	Tue Jan 03 08:46:54 2012
++++ T:/USER/Regan/Xfer/dnrgps/DnrGps_ArcMap/IDnrGpsController.cs	Thu Dec 22 23:26:47 2011
+@@ -4,7 +4,6 @@
+  * If the map does not have a coordinate system, should I assume it is WGS84, instead of returning an error?
+  * Need to protect against bad defaults
+  * Should I wrap all methods in a try catch, to ensure that an error in this code will not crash arcMap?
+- * Create a NamedLayer object to return instead of string[]
+  * Implement all shapes to WKT
+  * Add pan/refresh api
+  * Refresh() is separate from the Draw and Clear methods, so that they can be combined without multiple refreshes
+@@ -41,7 +40,7 @@
+         //If there is only one dataframe in the map, then dataFrame +':' is omitted
+         //layer groups can be nested arbitrarily deep, so the path will be arbitrarily long
+         //If a layer is not in a layer group, then only the layer name is provided.
+-        string[] GetFeatureLayerNames();
++        ILayerName[] GetFeatureLayerNames();
+ 
+         //layerName has a specific format.  To ensure correct formatting it
+         //should be one of the strings returned by GetFeatureLayerNames()
+@@ -49,9 +48,9 @@
+         //If there are more than one layers with the same name, the first found is returned
+         //By the layernaming conventions, the name should be unique, however no guarantee.
+         System.Data.DataTable GetActiveFeatureLayerData();
+-        System.Data.DataTable GetFeatureLayerData(string layerName);
+-        System.Data.DataTable GetFeatureLayerData(string layerName, string[] fieldNames);
+-        void WriteFeatureLayerToFile(string layerName, string file);
++        System.Data.DataTable GetFeatureLayerData(ILayerName layerName);
++        System.Data.DataTable GetFeatureLayerData(ILayerName layerName, string[] fieldNames);
++        void WriteFeatureLayerToFile(ILayerName layerName, string file);
+ 
+         /// <summary>
+         /// Adds an arrow marker to a special graphics layer in the focus map.
+--- C:/Users/resarwas/Documents/Visual Studio 2010/Projects/DnrGps/ArcMapIntegration/DnrGps_ArcMap/LayerUtils.cs	Tue Jan 03 10:48:58 2012
++++ T:/USER/Regan/Xfer/dnrgps/DnrGps_ArcMap/LayerUtils.cs	Thu Dec 22 23:30:27 2011
+@@ -47,18 +47,18 @@
+         /// <param name="mapSeparator">A character string used to data frame name from the group/layer names</param>
+         /// <param name="layerSeparator">A character string used to the group names from the layer name</param>
+         /// <returns>null if the layer does not exist in the map document, full name otherwise</returns>
+-        internal static string GetFullName(IMxDocument doc, ILayer layer, string mapSeparator = ":",
+-                                           string layerSeparator = "/")
++        internal static LayerName GetFullName(IMxDocument doc, ILayer layer)
+         {
+             //ILayer does not know where it is in the maps/groups heirarchy, so a search is required.
+             IMaps maps = doc.Maps;
+             for (int i = 0; i < maps.Count; i++)
+             {
+                 IMap map = maps.Item[i];
+-                string name = GetFullName(map, layer, layerSeparator);
++                LayerName name = GetFullName(map, layer);
+                 if (name != null)
+                 {
+-                    return map.Name + mapSeparator + name;
++                    name.Dataframe = map.Name;
++                    return name;
+                 }
+             }
+             return null;
+@@ -73,39 +73,41 @@
+         /// <param name="layer">The ILayer whose full path name we want</param>
+         /// <param name="separator">A character string used to separate names in path</param>
+         /// <returns>null if the layer does not exist in IMap, full name otherwise</returns>
+-        internal static string GetFullName(IMap parent, ILayer layer, string separator = "/")
++        internal static LayerName GetFullName(IMap parent, ILayer layer)
+         {
+             for (int i = 0; i < parent.LayerCount; i++)
+             {
+                 if (parent.Layer[i] == layer)
+-                    return layer.Name;
++                    return new LayerName(layer.Name);
+ 
+                 if (!(parent.Layer[i] is ICompositeLayer))
+                     continue;
+ 
+-                string name = GetFullName((ICompositeLayer)parent.Layer[i], layer, separator);
++                LayerName name = GetFullName((ICompositeLayer)parent.Layer[i], layer);
+                 if (name != null)
+                 {
+-                    return parent.Layer[i].Name + separator + name;
++                    name.AddGroup(parent.Layer[i].Name);
++                    return name;
+                 }
+             }
+             return null;
+         }
+ 
+-        private static string GetFullName(ICompositeLayer parent, ILayer layer, string separator)
++        private static LayerName GetFullName(ICompositeLayer parent, ILayer layer)
+         {
+             for (int i = 0; i < parent.Count; i++)
+             {
+                 if (parent.Layer[i] == layer)
+-                    return layer.Name;
++                    return new LayerName(layer.Name);
+ 
+                 if (!(parent.Layer[i] is ICompositeLayer))
+                     continue;
+ 
+-                string name = GetFullName((ICompositeLayer)parent.Layer[i], layer, separator);
++                LayerName name = GetFullName((ICompositeLayer)parent.Layer[i], layer);
+                 if (name != null)
+                 {
+-                    return parent.Layer[i].Name + separator + name;
++                    name.AddGroup(parent.Layer[i].Name);
++                    return name;
+                 }
+             }
+             return null;
+--- C:/Users/resarwas/Documents/Visual Studio 2010/Projects/DnrGps/ArcMapIntegration/DnrGps_ArcMap/NamedLayer.cs	Mon Dec 05 09:15:34 2011
++++ T:/USER/Regan/Xfer/dnrgps/DnrGps_ArcMap/NamedLayer.cs	Sun Dec 18 11:07:44 2011
+@@ -3,6 +3,6 @@
+     internal struct NamedLayer
+     {
+         internal ESRI.ArcGIS.Carto.ILayer Layer;
+-        internal string Name;  //FIXME - Replace with LayerName
++        internal LayerName Name;
+     }
+ }
+--- C:/Users/resarwas/Documents/Visual Studio 2010/Projects/DnrGps/ArcMapIntegration/TestDataTable/TestForm.cs	Wed Dec 14 09:07:50 2011
++++ T:/USER/Regan/Xfer/dnrgps/TestDataTable/TestForm.cs	Thu Dec 22 23:31:49 2011
+@@ -57,7 +57,7 @@
+         {
+             AddMessage("Get Layers button clicked.");
+             layerListBox.Items.Clear();
+-            string[] layerNames;
++            ILayerName[] layerNames;
+             try
+             {
+                 layerNames = _controller.GetFeatureLayerNames();
+@@ -80,8 +80,8 @@
+         {
+             AddMessage("Get Data button clicked.");
+             dataGridView.DataSource = null;
+-            string layerName = layerListBox.Text;
+-            if (String.IsNullOrEmpty(layerName))
++            LayerName layerName = (LayerName)layerListBox.SelectedItem;
++            if (layerName == null)
+             {
+                 AddMessage("Failed to Get data.  There is no layer name selected.");
+                 return;
+@@ -107,7 +107,7 @@
+             }
+         }
+ 
+-        private DataTable GetDataTable(string layerName)
++        private DataTable GetDataTable(LayerName layerName)
+         {
+             System.Windows.Forms.MessageBox.Show(string.Format("Current Process: {0}", System.Diagnostics.Process.GetCurrentProcess().Id));
+ 
